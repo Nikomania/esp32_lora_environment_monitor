@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Monitoring Dashboard</title>
+    <style>
+      /* Minimal, neutral styling for functional table layout */
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial;
+        color: #000;
+        background: #fff;
+      }
+      .wrap {
+        max-width: 1100px;
+        margin: 24px auto;
+        padding: 16px;
+      }
+      header {
+        margin-bottom: 12px;
+      }
+      h1 {
+        margin: 0 0 4px 0;
+        font-size: 20px;
+      }
+      p {
+        margin: 0;
+        font-size: 13px;
+        color: #222;
+      }
+
+      .card {
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        overflow: hidden;
+      }
+      .table-container {
+        width: 100%;
+        overflow-x: auto;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      thead th {
+        text-align: left;
+        padding: 10px;
+        border-bottom: 1px solid #ccc;
+        font-weight: 600;
+      }
+      tbody td {
+        padding: 10px;
+        border-bottom: 1px solid #e6e6e6;
+      }
+      tr:hover td {
+        background: #fafafa;
+      }
+      .center {
+        text-align: center;
+      }
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono",
+          monospace;
+      }
+      footer {
+        padding: 10px;
+        font-size: 12px;
+        color: #333;
+        border-top: 1px solid #eee;
+      }
+
+      /* No color semantics applied. Keep only structural classes. */
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>Monitoring Dashboard</h1>
+        <p>Live sensor data from the server room</p>
+      </header>
+
+      <div class="card">
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Sensor Node (ID)</th>
+                <th>Timestamp</th>
+                <th class="center">Temperature</th>
+                <th class="center">Humidity</th>
+                <th class="center">Luminosity</th>
+                <th class="center">Presence</th>
+                <th class="center">Power</th>
+              </tr>
+            </thead>
+            <tbody id="table-body">
+              <tr>
+                <td colspan="7" class="center mono">Waiting for data...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <footer>
+          Refreshing every 5 seconds. Last update:
+          <span id="last-update">Never</span>
+        </footer>
+      </div>
+    </div>
+
+    <script>
+      // Minimal, clear names. Comments kept short.
+      const DATA_ENDPOINT = "/data";
+      const POLL_INTERVAL = 5000; // ms
+
+      function classifyTemperature(value) {
+        if (value == null || Number.isNaN(value)) return "normal";
+        if (value >= 45.0) return "critical";
+        if (value >= 38.0) return "hot";
+        return "normal";
+      }
+
+      async function fetchAndRender() {
+        try {
+          const res = await fetch(DATA_ENDPOINT);
+          if (!res.ok) throw new Error(`status ${res.status}`);
+          const payload = await res.json();
+          renderTable(payload);
+        } catch (err) {
+          const el = document.getElementById("table-body");
+          el.innerHTML = `<tr><td colspan="7" class="center mono">Failed to load data. Is the server running?</td></tr>`;
+          console.error("Fetch error:", err);
+        } finally {
+          document.getElementById("last-update").textContent =
+            new Date().toLocaleTimeString();
+        }
+      }
+
+      function renderTable(list) {
+        const body = document.getElementById("table-body");
+        if (!Array.isArray(list) || list.length === 0) {
+          body.innerHTML = `<tr><td colspan="7" class="center mono">No data received yet...</td></tr>`;
+          return;
+        }
+
+        body.innerHTML = "";
+
+        list.forEach((entry) => {
+          const node = entry.node_id ?? "N/A";
+          const ts = entry.timestamp
+            ? new Date(entry.timestamp).toLocaleString()
+            : "N/A";
+          const s = entry.sensors || {};
+
+          const tempVal =
+            typeof s.temperature_celsius === "number"
+              ? s.temperature_celsius.toFixed(2) + " °C"
+              : "N/A";
+          const humVal =
+            typeof s.humidity_percent === "number"
+              ? s.humidity_percent.toFixed(2) + " %"
+              : "N/A";
+          const lumVal =
+            typeof s.luminosity_lux === "number"
+              ? s.luminosity_lux.toFixed(2) + " lux"
+              : "N/A";
+          const presenceVal = s.presence_detected ? "Detected" : "No";
+          const powerVal = s.power_on ? "ON" : "OFF";
+
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+                    <td class="mono">${node}</td>
+                    <td>${ts}</td>
+                    <td class="center">${tempVal}</td>
+                    <td class="center">${humVal}</td>
+                    <td class="center">${lumVal}</td>
+                    <td class="center">${presenceVal}</td>
+                    <td class="center">${powerVal}</td>
+                `;
+          body.appendChild(tr);
+        });
+      }
+
+      document.addEventListener("DOMContentLoaded", () => {
+        fetchAndRender();
+        setInterval(fetchAndRender, POLL_INTERVAL);
+      });
+    </script>
+  </body>
+</html>
