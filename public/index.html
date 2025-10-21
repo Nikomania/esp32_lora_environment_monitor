@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Dashboard — Monitoramento LoRa</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  </head>
+  <body>
+    <main>
+      <h1>Monitoramento de Salas (LoRa)</h1>
+
+      <section id="latest">
+        <h2>Últimos valores</h2>
+        <div id="cards"></div>
+      </section>
+
+      <section id="chart-section">
+        <h2>Histórico — Temperatura</h2>
+        <label> Sala: <input id="room-input" value="Sala A" /></label>
+        <button id="btn-load">Carregar histórico</button>
+        <canvas id="tempChart" width="800" height="300"></canvas>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
