@@ -46,7 +46,14 @@ function decodePayload(buf) {
 // Endpoint to ingest from gateway
 app.post("/gateway", (req, res) => {
   try {
-    const { payload_base64, gateway_id, rssi, snr, room, timestamp } = req.body;
+    const {
+      payload_base64,
+      gateway_id,
+      rssi, // Received Signal Strength Indicator
+      snr, // Signal-to-Noise Ratio
+      room,
+      timestamp,
+    } = req.body;
     if (!payload_base64)
       return res.status(400).json({ error: "payload_base64 required" });
 
