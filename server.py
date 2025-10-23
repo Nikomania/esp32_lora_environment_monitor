@@ -1,90 +1,122 @@
-# server.py
 from http.server import SimpleHTTPRequestHandler
-import socketserver
+from socketserver import TCPServer
 import json
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List
+import os
+import time
 
-BASE_DIR = Path(__file__).resolve().parent
-DB_NAME = 'telemetry.db'
-DB_PATH = BASE_DIR / DB_NAME
-BIND_ADDR = '0.0.0.0'
-PORT = 8000
-
-
-class MonitoringController:
-    """Controller that encapsulates database operations."""
-    def __init__(self, db_path: Path):
+class DBController:
+    """Controller that encapsulates database operations with resiliency for SQLite locks."""
+    def __init__(self, db_path: Path, timeout: float = 30.0, retries: int = 5):
         self.db_path = db_path
+        self.timeout = timeout
+        self.retries = retries
 
     def initialize(self) -> None:
-        conn = sqlite3.connect(self.db_path)
-        cur = conn.cursor()
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS sensor_data (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                node_id TEXT NOT NULL,
-                timestamp TEXT NOT NULL,
-                temperature_celsius REAL,
-                humidity_percent REAL,
-                luminosity_lux REAL,
-                presence_detected BOOLEAN,
-                power_on BOOLEAN
-            )
-        ''')
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(self.db_path, timeout=self.timeout) as conn:
+            cur = conn.cursor()
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS sensor_data (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    node_id TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    temperature_celsius REAL,
+                    humidity_percent REAL,
+                    luminosity_lux REAL,
+                    presence_detected BOOLEAN,
+                    power_on BOOLEAN
+                )
+            ''')
+            cur.execute('PRAGMA journal_mode = WAL;')
+            cur.execute('PRAGMA synchronous = NORMAL;')
+            conn.commit()
+
+    def _connect(self):
+        return sqlite3.connect(self.db_path, timeout=self.timeout)
 
     def save(self, payload: Dict[str, Any]) -> None:
-        conn = sqlite3.connect(self.db_path)
-        cur = conn.cursor()
-        sensors = payload.get('sensors', {})
-        cur.execute('''
+        sensors = payload.get('sensors')
+        if sensors is None:
+            sqlite3.OperationalError('No sensor data provided')
+            return
+        sql = '''
             INSERT INTO sensor_data (
                 node_id, timestamp, temperature_celsius, humidity_percent,
                 luminosity_lux, presence_detected, power_on
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            payload.get('node_id'), payload.get('timestamp'),
-            sensors.get('temperature_celsius'), sensors.get('humidity_percent'),
-            sensors.get('luminosity_lux'), sensors.get('presence_detected'),
-            sensors.get('power_on')
-        ))
-        conn.commit()
-        conn.close()
+        '''
+        params = (
+            payload.get('node_id'),
+            payload.get('timestamp'),
+            sensors.get('temperature_celsius'),
+            sensors.get('humidity_percent'),
+            sensors.get('luminosity_lux'),
+            1 if sensors.get('presence_detected') else 0,
+            1 if sensors.get('power_on') else 0
+        )
+
+        for attempt in range(1, self.retries + 1):
+            try:
+                with self._connect() as conn:
+                    cur = conn.cursor()
+                    cur.execute(sql, params)
+                    conn.commit()
+                return
+            except sqlite3.OperationalError as e:
+                msg = str(e).lower()
+                if 'locked' in msg:
+                    sleep_time = 0.05 * (2 ** (attempt - 1))
+                    time.sleep(sleep_time)
+                    continue
+                else:
+                    raise
+
+        raise sqlite3.OperationalError(f'database is locked after {self.retries} retries')
 
     def fetch_recent(self, limit: int = 100) -> List[Dict[str, Any]]:
-        conn = sqlite3.connect(self.db_path)
-        cur = conn.cursor()
-        cur.execute('''
+        sql = '''
             SELECT node_id, timestamp, temperature_celsius, humidity_percent,
                    luminosity_lux, presence_detected, power_on
             FROM sensor_data
             ORDER BY timestamp DESC
             LIMIT ?
-        ''', (limit,))
-        rows = cur.fetchall()
-        conn.close()
+        '''
+        for attempt in range(1, self.retries + 1):
+            try:
+                with self._connect() as conn:
+                    cur = conn.cursor()
+                    cur.execute(sql, (limit,))
+                    rows = cur.fetchall()
+                out: List[Dict[str, Any]] = []
+                for r in rows:
+                    out.append({
+                        'node_id': r[0],
+                        'timestamp': r[1],
+                        'sensors': {
+                            'temperature_celsius': r[2],
+                            'humidity_percent': r[3],
+                            'luminosity_lux': r[4],
+                            'presence_detected': bool(r[5]),
+                            'power_on': bool(r[6])
+                        }
+                    })
+                return out
+            except sqlite3.OperationalError as e:
+                msg = str(e).lower()
+                if 'locked' in msg:
+                    sleep_time = 0.02 * (2 ** (attempt - 1))
+                    time.sleep(sleep_time)
+                    continue
+                else:
+                    raise
 
-        out: List[Dict[str, Any]] = []
-        for r in rows:
-            out.append({
-                'node_id': r[0],
-                'timestamp': r[1],
-                'sensors': {
-                    'temperature_celsius': r[2],
-                    'humidity_percent': r[3],
-                    'luminosity_lux': r[4],
-                    'presence_detected': bool(r[5]),
-                    'power_on': bool(r[6])
-                }
-            })
-        return out
+        raise sqlite3.OperationalError('database is locked after retries')
 
 
 class RequestHandler(SimpleHTTPRequestHandler):
-    controller: MonitoringController = None  # type: ignore
+    db_controller: DBController = None
 
     def do_POST(self) -> None:
         if self.path != '/data':
@@ -96,7 +128,8 @@ class RequestHandler(SimpleHTTPRequestHandler):
             length = int(self.headers.get('Content-Length', 0))
             raw = self.rfile.read(length)
             payload = json.loads(raw)
-            self.controller.save(payload)
+            print(payload)
+            self.db_controller.save(payload)
             self.send_response(202)
             self.end_headers()
             self.wfile.write(b'Data accepted and stored.')
@@ -107,12 +140,12 @@ class RequestHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == '/':
-            self.path = '/index.html'
+            self.path = 'public/index.html'
             return SimpleHTTPRequestHandler.do_GET(self)
 
         if self.path == '/data':
             try:
-                rows = self.controller.fetch_recent()
+                rows = self.db_controller.fetch_recent()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
@@ -126,24 +159,27 @@ class RequestHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
 
-def start_server() -> None:
-    controller = MonitoringController(DB_PATH)
-    controller.initialize()
+if __name__ == '__main__':
+    BASE_FOLDER = Path(__file__).resolve().parent
+    DB_NAME = 'telemetry.db'
+    DB_PATH = BASE_FOLDER / DB_NAME
+    BIND_ADDR = '0.0.0.0'
+    PORT = 8000
 
-    RequestHandler.controller = controller
+    db_controller = DBController(DB_PATH, timeout=30.0, retries=6)
+    db_controller.initialize()
 
-    # serve files from project directory
-    import os
-    os.chdir(BASE_DIR)
+    RequestHandler.db_controller = db_controller
 
-    with socketserver.TCPServer((BIND_ADDR, PORT), RequestHandler) as srv:
+    os.chdir(BASE_FOLDER)
+
+    # if great race for connections is expected, use ThreadingHTTPServer:
+    # server = ThreadingHTTPServer((BIND_ADDR, PORT), RequestHandler)
+
+    with TCPServer((BIND_ADDR, PORT), RequestHandler) as srv:
         print(f"Server running at http://{BIND_ADDR}:{PORT}")
         print(f"Open the dashboard at http://localhost:{PORT}/")
         try:
             srv.serve_forever()
         except KeyboardInterrupt:
             print('\nStopping server')
-
-
-if __name__ == '__main__':
-    start_server()
