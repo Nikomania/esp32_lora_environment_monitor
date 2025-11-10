@@ -1,124 +1,102 @@
 /**
  * @file protocol.h
- * @brief Compact binary protocol for sensor data transmission
+ * @brief Protocolo binário compacto compartilhado (client <-> gateway).
  *
- * This file is shared between client and gateway
+ * Layout (LITTLE-ENDIAN no ESP32)
+ *  Offset  Size  Field
+ *  0       1     msg_type
+ *  1       1     client_id
+ *  2       4     timestamp (millis)
+ *  6       2     temperature (°C x100)
+ *  8       2     humidity (% x100)
+ *  10      2     distance_cm (uint16)
+ *  12      1     battery (%)
+ *  13      2     reserved
+ *  15      1     checksum (XOR de bytes [0..14])  ← ÚLTIMO BYTE
+ *
+ * Total = 16 bytes
  */
 
 #ifndef PROTOCOL_H
 #define PROTOCOL_H
 
 #include <stdint.h>
+#include <stddef.h>
 
 // =====================================================
-// Message Types
+// Tipos de mensagem
 // =====================================================
-
 #define MSG_TYPE_SENSOR_DATA 0x01
-#define MSG_TYPE_HEARTBEAT 0x02
-#define MSG_TYPE_ALERT 0x03
-#define MSG_TYPE_ACK 0xAA
+#define MSG_TYPE_HEARTBEAT   0x02
+#define MSG_TYPE_ALERT       0x03
+#define MSG_TYPE_ACK         0xAA
 
 // =====================================================
-// Message Structure
+// Estruturas
 // =====================================================
 
 /**
- * @brief Sensor data message (16 bytes total)
+ * @brief Pacote de dados de sensores (16 bytes).
+ *
+ * Checksum é XOR de todos os bytes exceto o próprio checksum
+ * (ou seja, XOR de bytes [0..14]).
  */
 struct __attribute__((packed)) SensorDataMessage {
-    uint8_t msg_type; // Message type (1 byte)
-    uint8_t client_id; // Client identifier (1 byte)
-    uint32_t timestamp; // Unix timestamp or millis() (4 bytes)
-    int16_t temperature; // Temperature * 100 (2 bytes)
-    uint16_t humidity; // Humidity * 100 (2 bytes)
-    uint16_t distance_cm; // Distance in cm from ultrasonic sensor (2 bytes)
-    uint8_t battery; // Battery level % (1 byte)
-    uint16_t reserved; // Reserved (2 bytes) - MOVED BEFORE CHECKSUM
-    uint8_t checksum; // Simple checksum (1 byte) - MUST BE LAST
+    uint8_t  msg_type;
+    uint8_t  client_id;
+    uint32_t timestamp;     // millis()
+    int16_t  temperature;   // °C ×100
+    uint16_t humidity;      // % ×100
+    uint16_t distance_cm;   // cm
+    uint8_t  battery;       // 0..100
+    uint16_t reserved;      // alinhamento / uso futuro
+    uint8_t  checksum;      // ÚLTIMO BYTE
 };
 
 /**
- * @brief Heartbeat message (8 bytes total)
+ * @brief Heartbeat (8 bytes).
  */
 struct __attribute__((packed)) HeartbeatMessage {
-    uint8_t msg_type; // Message type
-    uint8_t client_id; // Client identifier
-    uint32_t timestamp; // Unix timestamp or millis()
-    uint8_t status; // Status flags
-    uint8_t checksum; // Simple checksum - MUST BE LAST
+    uint8_t  msg_type;
+    uint8_t  client_id;
+    uint32_t timestamp;     // millis()
+    uint8_t  status;        // flags
+    uint8_t  checksum;      // último
 };
 
 /**
- * @brief Alert message (12 bytes total)
+ * @brief Alerta (12 bytes).
  */
 struct __attribute__((packed)) AlertMessage {
-    uint8_t msg_type; // Message type
-    uint8_t client_id; // Client identifier
-    uint32_t timestamp; // Unix timestamp or millis()
-    uint8_t alert_code; // Alert type code
-    int16_t alert_value; // Value that triggered alert
-    uint8_t severity; // Severity level
-    uint8_t reserved; // Reserved
-    uint8_t checksum; // Simple checksum - MUST BE LAST
+    uint8_t  msg_type;
+    uint8_t  client_id;
+    uint32_t timestamp;     // millis()
+    uint8_t  alert_code;    // tipo
+    int16_t  alert_value;   // valor
+    uint8_t  severity;      // 0..255
+    uint8_t  reserved;
+    uint8_t  checksum;      // último
 };
 
 // =====================================================
-// Status Flags
+// Helpers
 // =====================================================
 
-#define STATUS_OK 0x00
-#define STATUS_LOW_BATTERY 0x01
-#define STATUS_SENSOR_ERROR 0x02
-#define STATUS_LORA_ERROR 0x04
-
-// =====================================================
-// Alert Codes
-// =====================================================
-
-#define ALERT_TEMP_HIGH 0x10
-#define ALERT_TEMP_LOW 0x11
-#define ALERT_HUMIDITY_HIGH 0x20
-#define ALERT_HUMIDITY_LOW 0x21
-#define ALERT_DISTANCE_LOW 0x30  // Distance too close (presence detected)
-
-// =====================================================
-// Helper Functions
-// =====================================================
-
-inline uint8_t calculate_checksum(const uint8_t* data, size_t length)
-{
-    uint8_t checksum = 0;
-    for (size_t i = 0; i < length - 1; i++) {
-        checksum ^= data[i];
-    }
-    return checksum;
+inline uint8_t calculate_checksum(const uint8_t* data, size_t length) {
+    // XOR de todos os bytes exceto o último (checksum)
+    uint8_t c = 0;
+    for (size_t i = 0; i + 1 < length; ++i) c ^= data[i];
+    return c;
 }
 
-inline bool verify_checksum(const uint8_t* data, size_t length)
-{
-    uint8_t calculated = calculate_checksum(data, length);
-    return calculated == data[length - 1];
+inline bool verify_checksum(const uint8_t* data, size_t length) {
+    if (length == 0) return false;
+    return calculate_checksum(data, length) == data[length - 1];
 }
 
-inline int16_t encode_temperature(float temp)
-{
-    return (int16_t)(temp * 100);
-}
-
-inline float decode_temperature(int16_t temp)
-{
-    return temp / 100.0f;
-}
-
-inline uint16_t encode_humidity(float humid)
-{
-    return (uint16_t)(humid * 100);
-}
-
-inline float decode_humidity(uint16_t humid)
-{
-    return humid / 100.0f;
-}
+inline int16_t  encode_temperature(float t) { return (int16_t)(t * 100); }
+inline float    decode_temperature(int16_t t){ return t / 100.0f; }
+inline uint16_t encode_humidity(float h)    { return (uint16_t)(h * 100); }
+inline float    decode_humidity(uint16_t h) { return h / 100.0f; }
 
 #endif // PROTOCOL_H
