@@ -43,14 +43,12 @@ RTC_DATA_ATTR uint32_t boot_count = 0;
 
 void setup_lora();
 void setup_sensors();
-float read_moisture_sensor();
-float read_ultrasonic_distance();
-void read_sensors(float& humid, float& distance);
 bool should_transmit(float humid, float distance);
 bool transmit_sensor_data(float humid, float distance);
 void enter_deep_sleep();
 void print_stats();
 float simulate_sensor_reading(float base, float variation);
+static inline void read_sensors(float& humid, float& distance);
 
 // =====================================================
 // Setup
@@ -124,6 +122,59 @@ void loop() {
 #endif
 }
 
+// ======== Leituras dos sensores ========
+
+static inline float read_moisture_sensor();
+static inline float read_ultrasonic_distance();
+
+static inline void read_sensors(float& humid, float& distance) {
+#if USE_REAL_SENSORS
+  humid   = read_moisture_sensor();
+  distance= read_ultrasonic_distance();
+#else
+  humid   = simulate_sensor_reading(SensorCfg::kHumBase,  SensorCfg::kHumVar);
+  distance= simulate_sensor_reading(SensorCfg::kDistBase, SensorCfg::kDistVar);
+  if (boot_count > 1) {
+    humid    = constrain(prev_humidity + (humid    - SensorCfg::kHumBase )*0.3f, 0.0f, 100.0f);
+    distance = constrain(prev_distance + (distance - SensorCfg::kDistBase)*0.3f, 5.0f, 400.0f);
+  }
+#endif
+  humid   = constrain(humid,   0.0f, 100.0f);
+  distance= constrain(distance, 5.0f, 400.0f);
+}
+
+static inline float read_moisture_sensor() {
+#if USE_REAL_SENSORS
+  uint32_t sum = 0;
+  for (int i = 0; i < SensorCfg::kMoistSamples; i++) {
+    sum += analogRead(SensorCfg::kMoistPin);
+    delay(10);
+  }
+  uint16_t avg = sum / SensorCfg::kMoistSamples;
+  float humid = 100.0f - ((float)(avg - SensorCfg::kWetRaw) /
+                          (SensorCfg::kDryRaw - SensorCfg::kWetRaw) * 100.0f);
+  return constrain(humid, 0.0f, 100.0f);
+#else
+  return simulate_sensor_reading(SensorCfg::kHumBase, SensorCfg::kHumVar);
+#endif
+}
+
+static inline float read_ultrasonic_distance() {
+#if USE_REAL_SENSORS
+  digitalWrite(SensorCfg::kTrigPin, LOW);  delayMicroseconds(2);
+  digitalWrite(SensorCfg::kTrigPin, HIGH); delayMicroseconds(10);
+  digitalWrite(SensorCfg::kTrigPin, LOW);
+  long dur = pulseIn(SensorCfg::kEchoPin, HIGH, SensorCfg::kEchoTimeoutUs);
+  float dist = (dur * 0.0343f) / 2.0f;
+  if (dur == 0 || dist > 400) dist = 400;
+  if (dist < 2) dist = 2;
+  return constrain(dist, 2.0f, 400.0f);
+#else
+  return simulate_sensor_reading(SensorCfg::kDistBase, SensorCfg::kDistVar);
+#endif
+}
+
+
 // =====================================================
 // LoRa Setup
 // =====================================================
@@ -146,7 +197,7 @@ void setup_lora() {
     DEBUG_PRINTLN("✓ Reset pulse sent");
 
     SPI.begin(LinkCfg::kSck, LinkCfg::kMiso, LinkCfg::kMosi, LinkCfg::kNss);
-    SPI.setFrequency(2'000'000);
+    SPI.setFrequency(2000000UL);
     delay(100);
 
     int state = radio.begin(
@@ -200,38 +251,7 @@ void setup_sensors() {
 // Leituras dos sensores
 // =====================================================
 
-float read_moisture_sensor() {
-#if USE_REAL_SENSORS
-    uint32_t sum = 0;
-    for (int i = 0; i < SensorCfg::kMoistSamples; i++) {
-        sum += analogRead(SensorCfg::kMoistPin);
-        delay(10);
-    }
-    uint16_t avg = sum / SensorCfg::kMoistSamples;
-    float humid = 100.0 - ((float)(avg - SensorCfg::kWetRaw) /
-                           (SensorCfg::kDryRaw - SensorCfg::kWetRaw) * 100.0);
-    return constrain(humid, 0, 100);
-#else
-    return simulate_sensor_reading(SensorCfg::kHumBase, SensorCfg::kHumVar);
-#endif
-}
 
-float read_ultrasonic_distance() {
-#if USE_REAL_SENSORS
-    digitalWrite(SensorCfg::kTrigPin, LOW);
-    delayMicroseconds(2);
-    digitalWrite(SensorCfg::kTrigPin, HIGH);
-    delayMicroseconds(10);
-    digitalWrite(SensorCfg::kTrigPin, LOW);
-
-    long dur = pulseIn(SensorCfg::kEchoPin, HIGH, SensorCfg::kEchoTimeoutUs);
-    float dist = (dur * 0.0343f) / 2.0f;
-    if (dur == 0 || dist > 400) dist = 400;
-    return constrain(dist, 2, 400);
-#else
-    return simulate_sensor_reading(SensorCfg::kDistBase, SensorCfg::kDistVar);
-#endif
-}
 
 // =====================================================
 // Lógica de envio
