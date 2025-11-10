@@ -74,11 +74,32 @@ void setup() {
   }
 }
 
+
 // =====================================================
 // Loop
 // =====================================================
 
 void loop() {
+#if TEST_MODE
+  static unsigned long last = 0;
+  if (millis() - last > GwCfg::kTestEveryMs) {
+      last = millis();
+
+      // Pacote simulado
+      SensorDataMessage msg{};
+      msg.msg_type   = MSG_TYPE_SENSOR_DATA;
+      msg.client_id  = 1;
+      msg.timestamp  = millis();
+      msg.temperature= encode_temperature(25.4f);
+      msg.humidity   = encode_humidity(58.3f);
+      msg.distance_cm= 90;
+      msg.battery    = 97;
+      msg.checksum   = calculate_checksum((uint8_t*)&msg, sizeof(msg));
+
+      String json_line = packet_to_json(msg);
+      Serial.println(json_line); // gateway envia o JSON simulado
+  }
+#else
   if (!lora_ready) {
     delay(2000);
     return;
@@ -96,7 +117,9 @@ void loop() {
     print_stats();
     last_stat_time = millis();
   }
+#endif
 }
+
 
 // =====================================================
 // LoRa setup

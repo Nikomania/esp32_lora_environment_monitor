@@ -54,7 +54,7 @@
 
 // Modo de teste (injeta pacotes fake)
 #ifndef TEST_MODE
-  #define TEST_MODE false
+  #define TEST_MODE true
 #endif
 
 #ifndef TEST_INTERVAL_MS
